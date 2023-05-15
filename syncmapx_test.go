@@ -1,4 +1,4 @@
-package cmap
+package syncmapx
 
 import (
 	"encoding/json"
