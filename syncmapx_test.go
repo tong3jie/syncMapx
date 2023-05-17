@@ -14,9 +14,6 @@ type Animal struct {
 
 func TestMapCreation(t *testing.T) {
 	m := New[string]()
-	if m.shards == nil {
-		t.Error("map is null.")
-	}
 
 	if m.Count() != 0 {
 		t.Error("new map should be empty.")
@@ -297,7 +294,7 @@ func TestBufferedIterator(t *testing.T) {
 
 	counter := 0
 	// Iterate over elements.
-	for item := range m.IterBuffered() {
+	for item := range m.Iter() {
 		val := item.Val
 
 		if (val == Animal{}) {
@@ -473,9 +470,6 @@ func TestFnv32(t *testing.T) {
 	if err != nil {
 		t.Errorf(err.Error())
 	}
-	if fnv32(string(key)) != hasher.Sum32() {
-		t.Errorf("Bundled fnv32 produced %d, expected result from hash/fnv32 is %d", fnv32(string(key)), hasher.Sum32())
-	}
 
 }
 
@@ -576,7 +570,7 @@ func TestUnDrainedIter(t *testing.T) {
 	}
 
 	counter = 0
-	for item := range m.IterBuffered() {
+	for item := range m.Iter() {
 		val := item.Val
 
 		if (val == Animal{}) {
@@ -599,7 +593,7 @@ func TestUnDrainedIterBuffered(t *testing.T) {
 	}
 	counter := 0
 	// Iterate over elements.
-	ch := m.IterBuffered()
+	ch := m.Iter()
 	for item := range ch {
 		val := item.Val
 
@@ -628,7 +622,7 @@ func TestUnDrainedIterBuffered(t *testing.T) {
 	}
 
 	counter = 0
-	for item := range m.IterBuffered() {
+	for item := range m.Iter() {
 		val := item.Val
 
 		if (val == Animal{}) {

@@ -40,7 +40,7 @@ func directSharding(key uint32) uint32 {
 }
 
 func BenchmarkItemsInt(b *testing.B) {
-	m := NewWithCustomShardingFunction[uint32, Animal](directSharding)
+	m := NewWithCustomShardingFunction[uint32, Animal]()
 
 	// Insert 100 elements.
 	for i := 0; i < 10000; i++ {
