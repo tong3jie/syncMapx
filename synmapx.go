@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+
+	"github.com/cespare/xxhash"
 )
 
 var SHARD_COUNT = 32
@@ -16,40 +18,60 @@ type Stringer interface {
 // A "thread" safe map of type string:Anything.
 // To avoid lock bottlenecks this map is dived to several (SHARD_COUNT) map shards.
 type ConcurrentMap[K comparable, V any] struct {
-	smap *sync.Map
+	shards   []*sync.Map
+	sharding func(key K) uint32
 }
 
-func create[K comparable, V any]() ConcurrentMap[K, V] {
+func create[K comparable, V any](fn32 func(key K) uint32) ConcurrentMap[K, V] {
 	m := ConcurrentMap[K, V]{
-		smap: &sync.Map{},
+		shards:   make([]*sync.Map, SHARD_COUNT),
+		sharding: fn32,
+	}
+
+	for i := 0; i < SHARD_COUNT; i++ {
+		m.shards[i] = &sync.Map{}
 	}
 	return m
 }
 
 // Creates a new concurrent map.
 func New[V any]() ConcurrentMap[string, V] {
-	return create[string, V]()
+	return create[string, V](GetShardIndex)
 }
 
 // Creates a new concurrent map.
 func NewStringer[K Stringer, V any]() ConcurrentMap[K, V] {
-	return create[K, V]()
+
+	return create[K, V](strfnv32[K])
+}
+
+func strfnv32[K fmt.Stringer](key K) uint32 {
+	return GetShardIndex(key.String())
 }
 
 // Creates a new concurrent map.
-func NewWithCustomShardingFunction[K comparable, V any]() ConcurrentMap[K, V] {
-	return create[K, V]()
+func NewWithCustomShardingFunction[K comparable, V any](fn32 func(key K) uint32) ConcurrentMap[K, V] {
+	return create[K, V](fn32)
+}
+
+func GetShardIndex(key string) uint32 {
+	return uint32(xxhash.Sum64([]byte(key)))
+}
+func (m ConcurrentMap[K, V]) getShard(key K) *sync.Map {
+	index := m.sharding(key)
+	return m.shards[index%uint32(SHARD_COUNT)]
 }
 
 func (m ConcurrentMap[K, V]) MSet(data map[K]V) {
 	for key, value := range data {
-		m.smap.Store(key, value)
+		m.getShard(key).Store(key, value)
 	}
 }
 
 // Sets the given value under the specified key.
 func (m ConcurrentMap[K, V]) Set(key K, value V) {
-	m.smap.Store(key, value)
+	shard := m.getShard(key)
+	shard.Store(key, value)
 }
 
 // Callback to return new element to be inserted into the map
@@ -61,22 +83,23 @@ type UpsertCb[V any] func(exist bool, valueInMap V, newValue V) V
 // Insert or Update - updates existing element or inserts a new one using UpsertCb
 func (m ConcurrentMap[K, V]) Upsert(key K, value V, cb UpsertCb[V]) (res V) {
 	var val V
-	v, ok := m.smap.Load(key)
+	shard := m.getShard(key)
+	v, ok := shard.Load(key)
 	if valueNew, ok1 := v.(V); ok1 {
 		val = valueNew
 	}
 	res = cb(ok, val, value)
-	m.smap.Store(key, res)
+	shard.Store(key, res)
 	return res
 }
 
 // Sets the given value under the specified key if no value was associated with it.
 func (m ConcurrentMap[K, V]) SetIfAbsent(key K, value V) bool {
 	// Get map shard.
-
-	_, ok := m.smap.Load(key)
+	shard := m.getShard(key)
+	_, ok := shard.Load(key)
 	if !ok {
-		m.smap.Store(key, value)
+		shard.Store(key, value)
 	}
 	return !ok
 }
@@ -85,7 +108,7 @@ func (m ConcurrentMap[K, V]) SetIfAbsent(key K, value V) bool {
 func (m ConcurrentMap[K, V]) Get(key K) (V, bool) {
 	// Get shard
 	var value V
-	val, ok := m.smap.Load(key)
+	val, ok := m.getShard(key).Load(key)
 	if valueNew, ok1 := val.(V); ok1 {
 		return valueNew, ok
 	}
@@ -95,22 +118,24 @@ func (m ConcurrentMap[K, V]) Get(key K) (V, bool) {
 // Count returns the number of elements within the map.
 func (m ConcurrentMap[K, V]) Count() int {
 	count := 0
-	m.smap.Range(func(key, value any) bool {
-		count++
-		return true
-	})
+	for i := range m.shards {
+		m.shards[i].Range(func(key, value any) bool {
+			count++
+			return true
+		})
+	}
 	return count
 }
 
 // Looks up an item under specified key
 func (m ConcurrentMap[K, V]) Has(key K) bool {
-	_, ok := m.smap.Load(key)
+	_, ok := m.getShard(key).Load(key)
 	return ok
 }
 
 // Remove removes an element from the map.
 func (m ConcurrentMap[K, V]) Remove(key K) {
-	m.smap.Delete(key)
+	m.getShard(key).Delete(key)
 }
 
 // RemoveCb is a callback executed in a map.RemoveCb() call, while Lock is held
@@ -123,13 +148,14 @@ type RemoveCb[K any, V any] func(key K, v V, exists bool) bool
 func (m ConcurrentMap[K, V]) RemoveCb(key K, cb RemoveCb[K, V]) bool {
 	// Try to get shard.
 	var value V
-	v, ok := m.smap.Load(key)
+	shard := m.getShard(key)
+	v, ok := shard.Load(key)
 	if valueNew, ok1 := v.(V); ok1 {
 		value = valueNew
 	}
 	remove := cb(key, value, ok)
 	if remove && ok {
-		m.smap.Delete(key)
+		shard.Delete(key)
 	}
 	return remove
 }
@@ -137,9 +163,10 @@ func (m ConcurrentMap[K, V]) RemoveCb(key K, cb RemoveCb[K, V]) bool {
 // Pop removes an element from the map and returns it
 func (m ConcurrentMap[K, V]) Pop(key K) (v V, exists bool) {
 	var value V
-	val, exists := m.smap.Load(key)
+	shard := m.getShard(key)
+	val, exists := shard.Load(key)
 	if valueNew, ok1 := val.(V); ok1 {
-		m.smap.Delete(key)
+		shard.Delete(key)
 		return valueNew, exists
 	}
 	return value, exists
@@ -160,18 +187,16 @@ type Tuple[K comparable, V any] struct {
 //
 // Deprecated: using IterBuffered() will get a better performence
 func (m ConcurrentMap[K, V]) Iter() <-chan Tuple[K, V] {
-	ch := make(chan Tuple[K, V])
-	count := 0
-	mcount := m.Count()
+
+	ch := make(chan Tuple[K, V], m.Count())
 	go func() {
-		m.smap.Range(func(key, value any) bool {
-			ch <- Tuple[K, V]{key.(K), value.(V)}
-			count++
-			if count == mcount {
-				close(ch)
-			}
-			return true
-		})
+		for i := range m.shards {
+			m.shards[i].Range(func(key, value any) bool {
+				ch <- Tuple[K, V]{key.(K), value.(V)}
+				return true
+			})
+		}
+		close(ch)
 	}()
 	return ch
 }
@@ -204,29 +229,29 @@ type IterCb[K comparable, V any] func(key K, v V)
 // Callback based iterator, cheapest way to read
 // all elements in a map.
 func (m ConcurrentMap[K, V]) IterCb(fn IterCb[K, V]) {
-	m.smap.Range(func(key, value any) bool {
-		fn(key.(K), value.(V))
-		return true
-	})
-
+	for i := range m.shards {
+		m.shards[i].Range(func(key, value any) bool {
+			fn(key.(K), value.(V))
+			return true
+		})
+	}
 }
 
 // Keys returns all keys as []string
 func (m ConcurrentMap[K, V]) Keys() []K {
 	count := m.Count()
-	i := 0
 	ch := make(chan K, count)
 	// Foreach shard.
 	go func() {
-		m.smap.Range(func(key, value any) bool {
-			ch <- key.(K)
-			i++
-			if i == count {
-				close(ch)
-			}
-			return true
-		})
+		for i := range m.shards {
+			m.shards[i].Range(func(key, value any) bool {
+				ch <- key.(K)
+				i++
 
+				return true
+			})
+		}
+		close(ch)
 	}()
 
 	// Generate keys
