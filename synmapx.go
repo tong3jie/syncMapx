@@ -8,7 +8,7 @@ import (
 	"github.com/cespare/xxhash"
 )
 
-var SHARD_COUNT = 32
+const SHARD_COUNT = 32
 
 type Stringer interface {
 	fmt.Stringer
@@ -35,14 +35,12 @@ func create[K comparable, V any](fn32 func(key K) uint32) ConcurrentMap[K, V] {
 }
 
 // Creates a new concurrent map.
-func New[V any](count uint) ConcurrentMap[string, V] {
-	SHARD_COUNT = int(count)
+func New[V any]() ConcurrentMap[string, V] {
 	return create[string, V](GetShardIndex)
 }
 
 // Creates a new concurrent map.
-func NewStringer[K Stringer, V any](count uint) ConcurrentMap[K, V] {
-	SHARD_COUNT = int(count)
+func NewStringer[K Stringer, V any]() ConcurrentMap[K, V] {
 	return create[K, V](strfnv32[K])
 }
 
