@@ -230,10 +230,18 @@ type IterCb[K comparable, V any] func(key K, v V) bool
 // Callback based iterator, cheapest way to read
 // all elements in a map.
 func (m ConcurrentMap[K, V]) IterCb(fn IterCb[K, V]) {
+	var point int8
 	for i := range m.shards {
 		m.shards[i].Range(func(key, value any) bool {
-			return fn(key.(K), value.(V))
+			ok := fn(key.(K), value.(V))
+			if !ok {
+				point = -1
+			}
+			return ok
 		})
+		if point == -1 {
+			break
+		}
 	}
 }
 
