@@ -333,8 +333,9 @@ func TestIterCb(t *testing.T) {
 
 	counter := 0
 	// Iterate over elements.
-	m.IterCb(func(key string, v Animal) {
+	m.IterCb(func(key string, v Animal) bool {
 		counter++
+		return true
 	})
 	if counter != 100 {
 		t.Error("We should have counted 100 elements.")
